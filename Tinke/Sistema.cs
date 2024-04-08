@@ -198,11 +198,18 @@ namespace Tinke
                         ChangeByDir(Environment.GetCommandLineArgs()[3]);
                     }
                     // parse saving args
-                    for(int i = 5; i < Environment.GetCommandLineArgs().Length; i++)
-                    {
-
-                    }
-                    return;
+                    //for(int i = 5; i < Environment.GetCommandLineArgs().Length; i++)
+                    //{
+                    //}
+                    //btnSaveROM_Click(null, EventArgs.Empty);
+                    try{
+                        btnSaveROM_Click2(Environment.GetCommandLineArgs()[3],Environment.GetCommandLineArgs()[5]);
+                        }
+                    catch (NullReferenceException){}
+                    Program.FreeConsole();
+                    SendKeys.SendWait("{ENTER}");
+                    Application.Exit();
+                    //return;
                 }
                 filesToRead = new String[Environment.GetCommandLineArgs().Length - 1];
                 Array.Copy(Environment.GetCommandLineArgs(), 1, filesToRead, 0, filesToRead.Length);
@@ -1988,6 +1995,528 @@ namespace Tinke
             File.Delete(banner);
             File.Delete(files);
         }
+
+        private void btnSaveROM_Click2(string files_path,string rom_name)
+        {
+            /* ROM sections:
+             * 
+             * Header (0x0000-0x4000)
+             * ARM9 Binary
+             *   |_ARM9
+             *   |_ARM9 Overlays Tables
+             *   |_ARM9 Overlays
+             * ARM7 Binary
+             *   |_ARM7
+             *   |_ARM7 Overlays Tables
+             *   |_ARM7 Overlays
+             * FNT (File Name Table)
+             *   |_Main tables
+             *   |_Subtables (names)
+             * FAT (File Allocation Table)
+             *   |_Files offset
+             *     |_Start offset
+             *     |_End offset
+             * Banner
+             *   |_Header 0x20
+             *   |_Icon (Bitmap + palette) 0x200 + 0x20
+             *   |_Game titles (Japanese, English, French, German, Italian, Spanish) 6 * 0x100
+             * Files...
+            */
+            bool keep_original = false;
+            bool a9_recomp = false;
+            bool a9_bestcomp = false;
+            Nitro.Estructuras.ROMHeader header = romInfo.Cabecera;
+            header.trimmedRom = false;
+
+            /*Dialog.SaveOptions dialog = new Dialog.SaveOptions();
+            if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+                return;
+            if (dialog.IsKeepSignature)
+                keep_original = true;
+            if (dialog.IsSafeTrim)
+                header.trimmedRom = true;
+            if (dialog.IsReCompress)
+                a9_recomp = true;
+            if (dialog.IsBetterCompress)
+                a9_bestcomp = true;*/
+
+            Thread create = new Thread(ThreadEspera)
+            {
+                IsBackground = true
+            };
+            if (!isMono)
+                create.Start("S05");
+
+            // Get special files
+            sFolder ftc = accion.Search_Folder("ftc");
+
+            sFile fnt = ftc.files.Find(sFile => sFile.name == "fnt.bin");
+            sFile fat = ftc.files.Find(sFile => sFile.name == "fat.bin");
+            sFile arm9 = ftc.files.Find(sFile => sFile.name == "arm9.bin");
+            sFile arm7 = ftc.files.Find(sFile => sFile.name == "arm7.bin");
+
+            int index = ftc.files.FindIndex(sFile => sFile.name == "y9.bin");
+            sFile y9 = new sFile();
+            List<sFile> ov9 = new List<sFile>();
+            if (index != -1)
+            {
+                y9 = ftc.files[index];
+                ov9 = ftc.files.FindAll(sFile => sFile.name.StartsWith("overlay9_"));
+            }
+
+            index = ftc.files.FindIndex(sFile => sFile.name == "y7.bin");
+            List<sFile> ov7 = new List<sFile>();
+            sFile y7 = new sFile();
+            if (index != -1)
+            {
+                y7 = ftc.files[index];
+                ov7 = ftc.files.FindAll(sFile => sFile.name.StartsWith("overlay7_"));
+            }
+
+            // Get special DSi (TWL) files
+            sFile arm9i = new sFile();
+            sFile arm7i = new sFile();
+            bool ov9Sha1Hmac_updated = false;
+            if (this.twl != null)
+            {
+                index = ftc.files.FindIndex(sFile => sFile.name == "arm9i.bin");
+                if (index != -1) arm9i = ftc.files[index];
+                index = ftc.files.FindIndex(sFile => sFile.name == "arm7i.bin");
+                if (index != -1) arm7i = ftc.files[index];
+
+                // Recalcs overlays9 hashes in arm9.bin
+                this.twl.UpdateOverlays9Sha1Hmac(ref arm9, romInfo.Cabecera, ov9);
+                ov9Sha1Hmac_updated = true;
+            }
+
+            #region Get ROM sections
+            BinaryReader br;
+            Console.WriteLine(Tools.Helper.GetTranslation("Messages", "S08"));
+            //Nitro.Estructuras.ROMHeader header = romInfo.Cabecera;
+            uint currPos = header.headerSize;
+            uint gameCode = BitConverter.ToUInt32(Encoding.ASCII.GetBytes(header.gameCode), 0);
+
+            // Write ARM9
+            string arm9Binary = Path.GetTempFileName();
+            string overlays9 = Path.GetTempFileName();
+            Console.Write("\tARM9 Binary...");
+
+            br = new BinaryReader(File.OpenRead(arm9.path));
+            br.BaseStream.Position = arm9.offset;
+            byte[] arm9Data = br.ReadBytes((int)arm9.size);
+
+            // Re-encrypt SA if Gamecode has been changed
+            if (gameCode != this.secureArea.CurrentKey)
+            {
+                this.secureArea.Encrypt(gameCode);
+                if (this.secureArea.OriginalEncrypted) Array.Copy(this.secureArea.EncryptedData, arm9Data, 0x800);
+            }
+
+            // Calc Secure Area CRC
+            if (header.ARM9romOffset == 0x4000 && header.ARM9size >= 0x4000)
+            {
+                Array.Copy(arm9Data, 0x800, this.secureArea.EncryptedData, 0x800, 0x3800);
+                header.secureCRC16 = SecureArea.CalcCRC(this.secureArea.EncryptedData, gameCode);
+            }
+
+            uint cmparm9 = 0;
+            if (!ov9Sha1Hmac_updated)
+            {
+                uint initptr = BitConverter.ToUInt32(header.reserved2, 0) & 0x3FFF;
+                uint hdrptr = BitConverter.ToUInt32(arm9Data, (int)initptr + 0x14) - header.ARM9ramAddress;
+                byte[] arm9Data_dec;
+                cmparm9 = ARM9BLZ.Decompress(arm9Data, header, out arm9Data_dec);
+                if (cmparm9 == 0 && a9_recomp)
+                {
+                    arm9Data = ARM9BLZ.Compress(arm9Data, header, 0, a9_bestcomp);
+                } else if (cmparm9 == 1 && a9_recomp)
+                {
+                    arm9Data = ARM9BLZ.Compress(arm9Data_dec, header, 0, a9_bestcomp);
+                }
+            }
+
+            BinaryWriter bw = new BinaryWriter(File.OpenWrite(arm9Binary));
+            bw.Write(arm9Data);
+            bw.Flush();
+            br.Close();
+
+            if (!ov9Sha1Hmac_updated && a9_recomp)
+            {
+                arm9.path = arm9Binary;
+                arm9.offset = 0;
+                arm9.size = (uint)arm9Data.Length;
+            }
+
+            header.ARM9romOffset = currPos;
+            header.ARM9size = arm9.size;
+            header.ARM9overlayOffset = 0;
+            uint arm9overlayOffset = 0;
+
+            currPos += arm9.size;
+
+            // Write the Nitrocode
+            UInt32 nitrocode_tmp, nitrocode_tmp_alt;
+            br = new BinaryReader(File.OpenRead(accion.ROMFile));
+            br.BaseStream.Position = romInfo.Cabecera.ARM9romOffset + romInfo.Cabecera.ARM9size;
+            nitrocode_tmp = br.ReadUInt32();
+            br.BaseStream.Position = romInfo.Cabecera.ARM9romOffset + arm9.size;
+            nitrocode_tmp_alt = br.ReadUInt32();
+            if (nitrocode_tmp == 0xDEC00621 || nitrocode_tmp_alt == 0xDEC00621)
+            {
+                // Nitrocode found
+                bw.Write(0xDEC00621);
+                bw.Write(br.ReadUInt32());
+                bw.Write(br.ReadUInt32());
+                currPos += 0x0C;
+                bw.Flush();
+            }
+            br.Close();
+
+            uint rem = currPos % 0x200;
+            //if (rem != 0)
+            {
+                while (rem < 0x200)
+                {
+                    bw.Write((byte)0xFF);
+                    rem++;
+                    currPos++;
+                }
+            }
+
+            if (header.ARM9overlaySize != 0)
+            {
+                // ARM9 Overlays Tables
+                br = new BinaryReader(File.OpenRead(y9.path));
+                br.BaseStream.Position = y9.offset;
+                Nitro.Overlay.Write_Y9(bw, br, ov9.ToArray());
+                bw.Flush();
+                br.Close();
+                header.ARM9overlayOffset = currPos;
+                header.ARM9overlaySize = y9.size;
+
+                currPos += y9.size;
+                rem = currPos % 0x200;
+                //if (rem != 0)
+                {
+                    while (rem < 0x200)
+                    {
+                        bw.Write((byte)0xFF);
+                        rem++;
+                        currPos++;
+                    }
+                }
+
+                Nitro.Overlay.EscribirOverlays(overlays9, ov9, accion.ROMFile);
+                bw.Write(File.ReadAllBytes(overlays9)); // ARM9 Overlays
+                arm9overlayOffset = currPos;
+                currPos += (uint)new FileInfo(overlays9).Length;
+            }
+            bw.Flush();
+            bw.Close();
+
+            Console.WriteLine(Tools.Helper.GetTranslation("Messages", "S09"), new FileInfo(arm9Binary).Length);
+
+            // Escribismo el ARM7 Binary
+            string arm7Binary = Path.GetTempFileName();
+            string overlays7 = Path.GetTempFileName();
+            Console.Write("\tARM7 Binary...");
+
+            br = new BinaryReader(File.OpenRead(arm7.path));
+            br.BaseStream.Position = arm7.offset;
+            bw = new BinaryWriter(File.OpenWrite(arm7Binary));
+            bw.Write(br.ReadBytes((int)arm7.size));
+            bw.Flush();
+            br.Close();
+
+            header.ARM7romOffset = currPos;
+            header.ARM7size = arm7.size;
+            header.ARM7overlayOffset = 0x00;
+            uint arm7overlayOffset = 0x00;
+
+            currPos += arm7.size;
+            rem = currPos % 0x200;
+            //if (rem != 0)
+            {
+                while (rem < 0x200)
+                {
+                    bw.Write((byte)0xFF);
+                    rem++;
+                    currPos++;
+                }
+            }
+
+            if (romInfo.Cabecera.ARM7overlaySize != 0x00)
+            {
+                // ARM7 Overlays Tables
+                br = new BinaryReader(File.OpenRead(y7.path));
+                br.BaseStream.Position = y7.offset;
+                bw.Write(br.ReadBytes((int)y7.size));
+                bw.Flush();
+                br.Close();
+                header.ARM7overlayOffset = currPos;
+                header.ARM7overlaySize = y7.size;
+
+                currPos += y7.size;
+                rem = currPos % 0x200;
+                //if (rem != 0)
+                {
+                    while (rem < 0x200)
+                    {
+                        bw.Write((byte)0xFF);
+                        rem++;
+                        currPos++;
+                    }
+                }
+
+                Nitro.Overlay.EscribirOverlays(overlays7, ov7, accion.ROMFile);
+                bw.Write(File.ReadAllBytes(overlays7)); // ARM7 Overlays
+
+                arm7overlayOffset = currPos;
+                currPos += (uint)new FileInfo(overlays7).Length;
+            }
+            bw.Flush();
+            bw.Close();
+            Console.WriteLine(Tools.Helper.GetTranslation("Messages", "S09"), new FileInfo(arm7Binary).Length);
+
+            // Escribimos el FNT (File Name Table)
+            string fileFNT = Path.GetTempFileName();
+            Console.Write("\tFile Name Table (FNT)...");
+
+            bw = new BinaryWriter(File.OpenWrite(fileFNT));
+            br = new BinaryReader(File.OpenRead(fnt.path));
+            br.BaseStream.Position = fnt.offset;
+            bw.Write(br.ReadBytes((int)fnt.size));
+            bw.Flush();
+            br.Close();
+            header.fileNameTableSize = fnt.size;
+            header.fileNameTableOffset = currPos;
+
+            currPos += fnt.size;
+            rem = currPos % 0x200;
+            //if (rem != 0)
+            {
+                while (rem < 0x200)
+                {
+                    bw.Write((byte)0xFF);
+                    rem++;
+                    currPos++;
+                }
+            }
+            bw.Flush();
+            bw.Close();
+
+            Console.WriteLine(Tools.Helper.GetTranslation("Messages", "S09"), new FileInfo(fileFNT).Length);
+
+            // Escribimos el banner
+            string banner = Path.GetTempFileName();
+            header.banner_size = Nitro.NDS.EscribirBanner(banner, romInfo.Banner);
+
+            // Escribimos el FAT (File Allocation Table)
+            string fileFAT = Path.GetTempFileName();
+            header.FAToffset = currPos;
+            Nitro.FAT.Write(fileFAT, accion.Root, header.FAToffset, accion.SortedIDs, arm9overlayOffset, arm7overlayOffset, header);
+            currPos += (uint)new FileInfo(fileFAT).Length;
+
+            header.bannerOffset = currPos;
+            currPos += (uint)new FileInfo(banner).Length;
+
+            // Escribimos los archivos
+            string files = Path.GetTempFileName();
+            Nitro.NDS.Write_Files(files, accion.ROMFile, accion.Root, accion.SortedIDs, header);
+            currPos += (uint)new FileInfo(files).Length;
+
+            // Update the ROM size values of the header
+            header.ROMsize = currPos;
+
+            // Update DSi staff header info
+            if (this.twl != null && (header.unitCode & 2) > 0)
+            {
+                // ARM9i and ARM7i files
+                this.twl.ImportArm9iData(arm9i.path, arm9i.offset, arm9i.size);
+                this.twl.ImportArm7iData(arm7i.path, arm7i.offset, arm7i.size);
+                header.dsi9_size = arm9i.size;
+                header.dsi7_size = arm7i.size;
+
+                // Digest constants
+                header.digest_sector_size = 0x400;
+                header.digest_block_sectorcount = 0x20;
+                header.digest_ntr_start = 0x4000;
+
+                // Digest NTR
+                header.ROMsize += header.digest_sector_size - (header.ROMsize - header.digest_ntr_start) % header.digest_sector_size;
+                header.digest_ntr_size = header.ROMsize - header.digest_ntr_start;
+
+                // Digest TWL
+                header.dsi9_rom_offset = 0;
+                header.dsi7_rom_offset = (header.dsi9_size >= 0x4000)
+                                             ? header.dsi9_size + header.digest_sector_size
+                                               - header.dsi9_size % header.digest_sector_size
+                                             : 0x4000;
+                header.digest_twl_size = header.dsi7_rom_offset + header.dsi7_size + header.digest_sector_size - header.dsi7_size % header.digest_sector_size;
+
+                // Hashtable of digest sectors
+                header.sector_hashtable_start = header.ROMsize;
+                header.sector_hashtable_size = (header.digest_ntr_size + header.digest_twl_size) / header.digest_sector_size * 0x14;
+                uint padSize = 0x14 * header.digest_block_sectorcount;
+                if (header.sector_hashtable_size % padSize != 0) header.sector_hashtable_size += padSize - header.sector_hashtable_size % padSize;
+
+                // Hashtable of sectors hashs blocks 
+                header.block_hashtable_start = header.sector_hashtable_start + header.sector_hashtable_size;
+                if (header.block_hashtable_start % 0x200 != 0) header.block_hashtable_start += 0x200 - header.block_hashtable_start % 0x200;
+                header.block_hashtable_size = header.sector_hashtable_size / header.digest_block_sectorcount;
+
+                // TWL sections offsets
+                header.digest_twl_start = header.block_hashtable_start + header.block_hashtable_size;
+                header.digest_twl_start += 0x200 - header.digest_twl_start % 0x200;
+                header.digest_twl_start += header.digest_sector_size - header.digest_twl_start % header.digest_sector_size;
+                if (!header.trimmedRom && header.digest_twl_start % 0x80000 != 0) header.digest_twl_start += 0x80000 - (header.digest_twl_start % 0x80000) + 0x3000;
+                //if (header.digest_twl_start % 0x80000 != 0) header.digest_twl_start += 0x80000 - (header.digest_twl_start % 0x80000) + 0x3000;
+                header.dsi9_rom_offset += header.digest_twl_start;
+                header.dsi7_rom_offset += header.digest_twl_start;
+
+                // Modcrypt info
+                if ((header.twlInternalFlags & 2) > 0)
+                {
+                    if ((header.tid_high & 0xF) == 0)
+                    {
+                        // Standard for FULL TWL ROMs (DSi Exclusive / DSi Enhanced)
+                        header.modcrypt1_size = (uint)Math.Min(0x4000, this.twl.DSi9Data.Length);
+                        header.modcrypt2_size = 0;
+                        header.modcrypt1_start = header.dsi9_rom_offset;
+                        header.modcrypt2_start = 0;
+                    }
+                    else
+                    {
+                        // Standard for DSiWare
+                        header.modcrypt1_size = (uint)this.twl.DSi9Data.Length;
+                        header.modcrypt2_size = (uint)this.twl.DSi7Data.Length;
+                        header.modcrypt1_start = header.dsi9_rom_offset;
+                        header.modcrypt2_start = header.dsi7_rom_offset;
+                    }
+                }
+                else
+                {
+                    header.modcrypt1_start = 0;
+                    header.modcrypt2_start = 0;
+                    header.modcrypt1_size = 0;
+                    header.modcrypt2_size = 0;
+                }
+
+                // ROM size
+                header.ROMsize = header.block_hashtable_start + header.block_hashtable_size;
+                header.ROMsize += 0x200 - header.ROMsize % 0x200;
+                header.total_rom_size = header.digest_twl_start + header.digest_twl_size;
+                currPos = header.total_rom_size;
+
+                // Encrypt ARM9 Secure Area (for HMAC-SHA1 hash)
+                if (!this.secureArea.OriginalEncrypted) Array.Copy(this.secureArea.EncryptedData, arm9Data, 0x800);
+
+                // Compute Hash
+                HMACSHA1 hmac = new HMACSHA1(TWL.hmac_sha1_key);
+                header.hmac_arm9 = hmac.ComputeHash(arm9Data, 0, (int)header.ARM9size);
+                header.hmac_arm7 = hmac.ComputeHash(File.ReadAllBytes(arm7Binary), 0, (int)header.ARM7size);
+                header.hmac_icon_title = hmac.ComputeHash(File.ReadAllBytes(banner), 0, (int)header.banner_size);
+                header.hmac_arm9i = hmac.ComputeHash(this.twl.DSi9Data, 0, (int)header.dsi9_size);
+                header.hmac_arm7i = hmac.ComputeHash(this.twl.DSi7Data, 0, (int)header.dsi7_size);
+                header.hmac_arm9_no_secure = hmac.ComputeHash(arm9Data, 0x4000, (int)header.ARM9size - 0x4000);
+                hmac.Clear();
+                hmac.Dispose();
+            }
+
+            header.tamaño = (uint)Math.Ceiling(Math.Log(currPos, 2));
+            // Ref. to TWL SDK' "Card Manual" for DSi Cartrige ROMs
+            if ((header.unitCode & 2) > 0 && (header.tid_high & 0xF) == 0 && header.tamaño < 25) header.tamaño = 25; 
+            header.tamaño = (uint)Math.Pow(2, header.tamaño);
+
+            // Get Header CRC
+            string tempHeader = Path.GetTempFileName();
+            Nitro.NDS.EscribirCabecera(tempHeader, header, accion.ROMFile);
+            BinaryReader brHeader = new BinaryReader(File.OpenRead(tempHeader));
+            header.headerCRC16 = (ushort)Ekona.Helper.CRC16.Calculate(brHeader.ReadBytes(0x15E));
+            brHeader.Close();
+            File.Delete(tempHeader);
+
+            // Write header
+            string header_file = Path.GetTempFileName();
+            Nitro.NDS.EscribirCabecera(header_file, header, accion.ROMFile);
+
+            Console.Write("<br>");
+            #endregion
+
+            if (!isMono)
+                CloseEspera(create);
+
+            // Obtenemos el nuevo archivo para guardar
+            /*SaveFileDialog o = new SaveFileDialog();
+            o.AddExtension = true;
+            o.DefaultExt = ".nds";
+            o.Filter = "Nintendo DS ROM (*.nds)|*.nds";
+            o.OverwritePrompt = true;
+            if (o.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {*/
+            string oFileName = rom_name;
+            if (oFileName != "")
+            {
+                Thread saverom = new Thread(ThreadEspera)
+                {
+                    IsBackground = true
+                };
+                if (!isMono)
+                    saverom.Start("S06");
+
+                Console.WriteLine(Tools.Helper.GetTranslation("Messages", "S0D"), oFileName);
+                bw = new BinaryWriter(new FileStream(oFileName, FileMode.Create));
+                Ekona.Helper.IOutil.Append(ref bw, header_file);
+                Ekona.Helper.IOutil.Append(ref bw, arm9Binary);
+                Ekona.Helper.IOutil.Append(ref bw, arm7Binary);
+                Ekona.Helper.IOutil.Append(ref bw, fileFNT);
+                Ekona.Helper.IOutil.Append(ref bw, fileFAT);
+                Ekona.Helper.IOutil.Append(ref bw, banner);
+                Ekona.Helper.IOutil.Append(ref bw, files);
+
+                // Write DSi data
+                if (this.twl != null && (header.unitCode & 2) > 0)
+                {
+                    this.twl.Write(ref bw, header, out header.hmac_digest_master);
+                    TWL.UpdateHeaderSignatures(ref bw, ref header, header_file, keep_original);
+                }
+
+                if (!header.trimmedRom)
+                {
+                    rem = header.tamaño - (uint)bw.BaseStream.Position;
+                    while (rem > 0)
+                    {
+                        bw.Write((byte)0xFF);
+                        rem--;
+                    }
+                }
+
+                bw.Flush();
+                bw.Close();
+
+                Console.WriteLine("<b>" + Tools.Helper.GetTranslation("Messages", "S09") + "</b>", new FileInfo(oFileName).Length);
+                accion.IsNewRom = false;
+
+                if (!isMono)
+                {
+                    CloseEspera(saverom);
+                    debug.Add_Text(sb.ToString());
+                }
+                sb.Length = 0;
+            }
+
+            // Borramos archivos ya innecesarios
+            File.Delete(header_file);
+            File.Delete(arm9Binary);
+            File.Delete(overlays9);
+            File.Delete(arm7Binary);
+            File.Delete(overlays7);
+            File.Delete(fileFNT);
+            File.Delete(fileFAT);
+            File.Delete(banner);
+            File.Delete(files);
+        }
+
         private void btnImport_Click(object sender, EventArgs e)
         {
             OpenFileDialog o = new OpenFileDialog
