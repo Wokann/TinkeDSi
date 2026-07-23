@@ -151,6 +151,9 @@ namespace Tinke.Nitro
             public bool trimmedRom;
             public bool doublePadding;
 
+            public bool hasDlpSignature;        // Whether the ROM has Download Play signature
+            public byte[] dlpSignature;         // Download Play signature data (0x88 bytes: 4 ID + 0x80 RSA + 4 Seed)
+
             /* Parental Control Age Ratings (for different countries/areas)
              *     Bit7: Rating exists for local country/area
              *     Bit6: Game is prohibited in local country/area?

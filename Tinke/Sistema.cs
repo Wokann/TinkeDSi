@@ -2050,6 +2050,31 @@ namespace Tinke
                     TWL.UpdateHeaderSignatures(ref bw, ref header, header_file, keep_original);
                 }
 
+                // Write Download Play signature at ROMsize position (NTR region end)
+                // Signature must be at header.ROMsize, between NTR region and TWL region
+                // twl will padding space between NTR region and TWL region, so we must write signature after twl padding to overwrite it
+                if (header.hasDlpSignature)
+                {
+                    uint signatureOffset = header.ROMsize;
+                    long savedPos = bw.BaseStream.Position;
+
+                    // Extend file with padding if not long enough
+                    if (bw.BaseStream.Length < signatureOffset)
+                    {
+                        bw.BaseStream.Position = bw.BaseStream.Length;
+                        while (bw.BaseStream.Position < signatureOffset)
+                            bw.Write((byte)0xFF);
+                    }
+
+                    // Write signature at ROMsize position
+                    bw.BaseStream.Position = signatureOffset;
+                    bw.Write(header.dlpSignature, 0, 0x88);
+                    Console.WriteLine("Download Play signature written at offset 0x" + signatureOffset.ToString("X8"));
+
+                    // Restore position to whichever is greater (continue subsequent writes)
+                    bw.BaseStream.Position = Math.Max(savedPos, signatureOffset + 0x88);
+                }
+
                 if (!header.trimmedRom)
                 {
                     rem = header.tamaño - (uint)bw.BaseStream.Position;

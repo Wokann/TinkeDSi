@@ -172,6 +172,23 @@ namespace Tinke.Nitro
                 nds.doublePadding |= (nds.fileNameTableSize % 0x400) < 0x200 && nds.FAToffset % 0x400 == 0;
                 nds.doublePadding |= (nds.FATsize % 0x400) < 0x200 && nds.bannerOffset % 0x400 == 0;
             }
+
+            // Check for Download Play signature (0x88 bytes after ROMsize, non-padding)
+            nds.hasDlpSignature = false;
+            nds.dlpSignature = null;
+
+            if (nds.ROMsize + 0x88 <= br.BaseStream.Length)
+            {
+                br.BaseStream.Position = nds.ROMsize;
+                byte[] sig = br.ReadBytes(0x88);
+                if (!sig.All(b => b == 0xFF) && !sig.All(b => b == 0x00))
+                {
+                    nds.hasDlpSignature = true;
+                    nds.dlpSignature = sig;
+                    Console.WriteLine("Download Play signature detected at offset 0x" + nds.ROMsize.ToString("X8"));
+                }
+            }
+
             if (nds.total_rom_size != 0)
                 nds.trimmedRom = (nds.total_rom_size - br.BaseStream.Length >= 0);
             else
