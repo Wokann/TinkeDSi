@@ -604,7 +604,9 @@ namespace Tinke.Nitro
                 if (i == 0 & sortedIDs[i] > sortedIDs.Length)
                     continue;
 
-                if (sortedIDs[i] <= ovlMaxId)
+                // in new file mode, new files including overlay7, overlay9 need to be listed after original file id,
+                // so ovlMaxId may less than sortedIDs[i].
+                if (sysFiles.Any(f => f.id == sortedIDs[i]))//(sortedIDs[i] <= ovlMaxId)
                 {
                     // Exclude overlay files by ID, because some files have name with "overlay" on begin
                     continue;

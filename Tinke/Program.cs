@@ -58,6 +58,9 @@ internal class ReplaceOptions
 
     [Option('b', "blz-cue", HelpText = "Use better compress method to compress ARM9 binary (BLZ-Cue). Will be ignore if -r/--re-comp not passed.")]
     public bool BlzCue { get; set; }
+
+    [Option('e', "extended", HelpText = "Enable extended replace mode. Read FAT/FNT/y9/y7 from external root/ftc/ folder to support new files.")]
+    public bool ExtendedMode { get; set; }
 }
 
 [Verb("open", true, HelpText = "Open file(s) or a folder via TinkeDSi GUI")]
@@ -99,6 +102,7 @@ namespace Tinke
         public static bool keepSig = false;
         public static bool recompressA9 = false;
         public static bool blzcueA9 = false;
+        public static bool extendedMode = false;
         public static int curCommand = -1;
         public static List<string> tblRoms;
         public static bool bIsFolder = false;
@@ -178,6 +182,7 @@ namespace Tinke
             keepSig = opts.KeepSig;
             recompressA9 = opts.Recompress;
             blzcueA9 = opts.BlzCue;
+            extendedMode = opts.ExtendedMode;
             curCommand = 2;
         }
 

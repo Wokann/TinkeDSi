@@ -209,6 +209,109 @@ namespace Tinke.Nitro
 
             return root;
         }
+        // use for new files adding. new files must be listed after original file id.
+        // if subfolder is not exsited, new files can be stored in root folder.
+        // if subfolder is exsited, new files must be stored in a new subfolder/the last subfolder in order to match file id rules in FNT.
+        public static sFolder ReadExFNT(string ExfntFile, uint fntOffset, Estructuras.sFAT[] fat, string romFile)
+        {
+            sFolder root = new sFolder();
+            root.files = new List<sFile>();
+            List<Estructuras.MainFNT> mains = new List<Estructuras.MainFNT>();
+
+            BinaryReader br = new BinaryReader(File.OpenRead(ExfntFile));
+            br.BaseStream.Position = fntOffset;
+
+            br.BaseStream.Position += 6;
+            ushort number_directories = br.ReadUInt16();  // Get the total number of directories (mainTables)
+            br.BaseStream.Position = fntOffset;
+
+            for (int i = 0; i < number_directories; i++)
+            {
+                Estructuras.MainFNT main = new Estructuras.MainFNT();
+                main.offset = br.ReadUInt32();
+                main.idFirstFile = br.ReadUInt16();
+                main.idParentFolder = br.ReadUInt16();
+
+                if (i != 0)
+                {
+                    if (br.BaseStream.Position > fntOffset + mains[0].offset)
+                    {                                      //  Error, in some cases the number of directories is wrong
+                        number_directories--;              // Found in FF Four Heroes of Light, Tetris Party deluxe
+                        i--;
+                        continue;
+                    }
+                }
+
+                long currOffset = br.BaseStream.Position;           // Posición guardada donde empieza la siguienta maintable
+                br.BaseStream.Position = fntOffset + main.offset;      // SubTable correspondiente
+
+                // SubTable
+                byte id = br.ReadByte();                            // Byte que identifica si es carpeta o archivo.
+                ushort idFile = main.idFirstFile;
+
+                while (id != 0x0)   // Indicador de fin de la SubTable
+                {
+                    if (id < 0x80)  // File
+                    {
+                        sFile currFile = new sFile();
+
+                        if (!(main.subTable.files is List<sFile>))
+                            main.subTable.files = new List<sFile>();
+
+                        int lengthName = id;
+                        currFile.name = new String(Encoding.GetEncoding("shift_jis").GetChars(br.ReadBytes(lengthName)));
+                        currFile.id = idFile; idFile++;
+
+                        // FAT part
+                        // for this new files mode, new files listed after the last original file id, so original use the original offset and size from rom file.
+                        // and new files be listed as 0 offset and 0 size.
+                        // the fat data is from rom file.
+                        if (currFile.id < fat.Length)
+                        {
+                            currFile.offset = fat[currFile.id].offset;
+                            currFile.size = fat[currFile.id].size;
+                        }
+                        else
+                        {
+                            currFile.offset = 0;
+                            currFile.size = 0;
+                        }
+                        currFile.path = romFile;
+                        // no need to get format for new files, because the new files are not in rom file, so the format is unknown.
+                        main.subTable.files.Add(currFile);
+                    }
+                    if (id > 0x80)  // Directorio
+                    {
+                        sFolder currFolder = new sFolder();
+
+                        if (!(main.subTable.folders is List<sFolder>))
+                            main.subTable.folders = new List<sFolder>();
+
+                        int lengthName = id - 0x80;
+                        currFolder.name = new String(Encoding.GetEncoding("shift_jis").GetChars(br.ReadBytes(lengthName)));
+                        currFolder.id = br.ReadUInt16();
+
+                        main.subTable.folders.Add(currFolder);
+                    }
+
+                    id = br.ReadByte();
+                }
+
+                mains.Add(main);
+                br.BaseStream.Position = currOffset;
+            }
+
+            // Clear previous values
+            root = new sFolder();
+            //accion.Root = new sFolder();
+
+            root = Jerarquizar_Carpetas(mains, 0, "root");
+            root.id = number_directories;
+
+            br.Close();
+
+            return root;
+        }
 
         public static sFolder Jerarquizar_Carpetas(List<Estructuras.MainFNT> tables, int idFolder, string nameFolder)
         {

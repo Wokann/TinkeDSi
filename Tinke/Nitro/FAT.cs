@@ -105,7 +105,9 @@ namespace Tinke.Nitro
 
                 if (!(currFile.name is string))
                     zero_files++;
-                else if (sortedIDs[i] <= ovlMaxId)
+                // in new file mode, new files including overlay7, overlay9 need to be listed after original file id,
+                // so ovlMaxId may less than sortedIDs[i].
+                else if (sysFiles.Any(f => f.id == sortedIDs[i]))//(sortedIDs[i] <= ovlMaxId)
                 {
                     if (currFile.name.StartsWith("overlay9"))
                     {

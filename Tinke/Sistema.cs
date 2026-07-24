@@ -218,12 +218,13 @@ namespace Tinke
                     Console.WriteLine("The input file not found!");
                 else {
                     filesToRead[0] = Program.replaceInputFile;
-                    ReadGame(filesToRead[0]);
+                    if (!Program.extendedMode) ReadGame(filesToRead[0]);
 
                     string fullPath = Path.GetFullPath(Program.replaceResPath);
                     string lastDirectoryName = Path.GetFileName(fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
                     if (Directory.Exists(Program.replaceResPath) && string.Equals(lastDirectoryName, "root"))
                     {
+                        if (Program.extendedMode) ReadGameWithEx(filesToRead[0], Program.replaceResPath);
                         ChangeByDir(Program.replaceResPath);
                         btnSaveROM_Click(null, null);
                     } else
@@ -469,6 +470,127 @@ namespace Tinke
             this.Text += " - " + new String(romInfo.Cabecera.gameTitle).Replace("\0", "") +
                 " (" + new String(romInfo.Cabecera.gameCode) + ')';
         }
+        private void ReadGameWithEx(string file, string rootPath)
+        {
+            DateTime startTime = DateTime.Now;
+
+            romInfo = new RomInfo(file);  // Read the header and banner
+            secureArea = new SecureArea(file); // Read and Decrypt ARM9 Secure Area
+            DateTime t1 = DateTime.Now;
+            accion = new Acciones(file, new String(romInfo.Cabecera.gameCode));
+            DateTime t2 = DateTime.Now;
+
+            string fatPath = Path.Combine(rootPath, "ftc", "fat.bin");
+            string fntPath = Path.Combine(rootPath, "ftc", "fnt.bin");
+            string y9Path = Path.Combine(rootPath, "ftc", "y9.bin");
+            string y7Path = Path.Combine(rootPath, "ftc", "y7.bin");
+
+            Nitro.Estructuras.sFAT[] fat;
+            if (File.Exists(fatPath))
+            {
+                fat = Nitro.FAT.ReadFAT(fatPath, 0, (uint)new FileInfo(fatPath).Length);
+                Console.WriteLine("ReadGameWithEx: Using external FAT, total entries: " + fat.Length);
+            }
+            else
+            {
+                fat = Nitro.FAT.ReadFAT(file, romInfo.Cabecera.FAToffset, romInfo.Cabecera.FATsize);
+                Console.WriteLine("ReadGameWithEx: Using ROM FAT, total entries: " + fat.Length);
+            }
+            DateTime t3 = DateTime.Now;
+
+            Nitro.Estructuras.sFAT[] romFat = Nitro.FAT.ReadFAT(file, romInfo.Cabecera.FAToffset, romInfo.Cabecera.FATsize);
+            Console.WriteLine("ReadGameWithEx: ROM internal FAT entries: " + romFat.Length);
+
+            sFolder root;
+            if (File.Exists(fntPath))
+            {
+                Console.WriteLine("ReadGameWithEx: Using external FNT: " + fntPath);
+                root = Nitro.FNT.ReadExFNT(fntPath, 0, fat, file);
+            }
+            else
+            {
+                root = Nitro.FNT.ReadFNT(file, romInfo.Cabecera.fileNameTableOffset, fat, accion);
+            }
+            DateTime t4 = DateTime.Now;
+
+            Nitro.Estructuras.ROMHeader originalHeader = romInfo.Cabecera;
+            
+            if (File.Exists(y9Path))
+            {
+                Nitro.Estructuras.ROMHeader header = romInfo.Cabecera;
+                header.ARM9overlaySize = (uint)new FileInfo(y9Path).Length;
+                romInfo.Cabecera = header;
+            }
+            if (File.Exists(y7Path))
+            {
+                Nitro.Estructuras.ROMHeader header = romInfo.Cabecera;
+                header.ARM7overlaySize = (uint)new FileInfo(y7Path).Length;
+                romInfo.Cabecera = header;
+            }
+
+            accion.LastFileID = fat.Length;
+            accion.LastFolderID = root.id + 0xF000;
+            root.id = 0xF000;
+
+            Console.WriteLine("ReadGameWithEx: Checking TWL initialization...");
+            Console.WriteLine("ReadGameWithEx: unitCode=" + romInfo.Cabecera.unitCode + ", (unitCode & 2)=" + (romInfo.Cabecera.unitCode & 2));
+            Console.WriteLine("ReadGameWithEx: twlInternalFlags=" + romInfo.Cabecera.twlInternalFlags + ", (twlInternalFlags & 1)=" + (romInfo.Cabecera.twlInternalFlags & 1));
+            Console.WriteLine("ReadGameWithEx: tid_high=" + romInfo.Cabecera.tid_high);
+            
+            if ((romInfo.Cabecera.unitCode & 2) > 0 && (romInfo.Cabecera.twlInternalFlags & 1) > 0)
+            {
+                if (romInfo.Cabecera.tid_high != 0 && romInfo.Cabecera.tid_high != 0xFFFFFFFF)
+                {
+                    try
+                    {
+                        this.twl = new TWL(file, originalHeader, romFat);
+                        Console.WriteLine("ReadGameWithEx: TWL initialization succeeded");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("ReadGameWithEx: TWL initialization failed with exception: " + ex.Message);
+                    }
+                    if (twl != null)
+                    {
+                        twl_flag = true;
+                        romInfo.Refresh_flag();
+                        Console.WriteLine("ReadGameWithEx: twl_flag set to true");
+                    }
+                    else
+                    {
+                        Console.WriteLine("ReadGameWithEx: twl is null after initialization");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("ReadGameWithEx: TWL initialization skipped - tid_high is 0 or 0xFFFFFFFF");
+                }
+            }
+            else
+            {
+                Console.WriteLine("ReadGameWithEx: TWL initialization skipped - unitCode or twlInternalFlags check failed");
+            }
+
+            if (!(root.folders is List<sFolder>))
+                root.folders = new List<sFolder>();
+            sFolder ftcFolder2 = Add_SystemFilesWithEx(fat, romFat, rootPath);
+            Console.WriteLine("ReadGameWithEx: Add_SystemFilesWithEx returned ftc folder, name=" + ftcFolder2.name + ", files count=" + ftcFolder2.files.Count);
+            foreach (sFile f in ftcFolder2.files)
+            {
+                Console.WriteLine("ReadGameWithEx: ftc file: " + f.name + ", id=" + f.id);
+            }
+            root.folders.Add(ftcFolder2);
+            Console.WriteLine("ReadGameWithEx: ftc folder added to root.folders, total folders=" + root.folders.Count);
+            DateTime t5 = DateTime.Now;
+
+            accion.Root = root;
+            Console.WriteLine("ReadGameWithEx: accion.Root set, total folders=" + accion.Root.folders.Count);
+            accion.SortedIDs = Nitro.FAT.SortByOffset(fat);
+            DateTime t6 = DateTime.Now;
+
+            this.Text += " - " + new String(romInfo.Cabecera.gameTitle).Replace("\0", "") +
+                " (" + new String(romInfo.Cabecera.gameCode) + ')';
+        }
 
         private sFolder Add_SystemFiles(Nitro.Estructuras.sFAT[] fatTable)
         {
@@ -584,6 +706,165 @@ namespace Tinke
             }
 
             Set_Format(ftc);
+            return ftc;
+        }
+
+        private sFolder Add_SystemFilesWithEx(Nitro.Estructuras.sFAT[] fatTable, Nitro.Estructuras.sFAT[] romFat, string rootPath)
+        {
+            sFolder ftc = new sFolder();
+            ftc.name = "ftc";
+            ftc.id = (ushort)accion.LastFolderID;
+            accion.LastFolderID++;
+            ftc.files = new List<sFile>();
+
+            string y9Path = Path.Combine(rootPath, "ftc", "y9.bin");
+            string y7Path = Path.Combine(rootPath, "ftc", "y7.bin");
+            string fntPath = Path.Combine(rootPath, "ftc", "fnt.bin");
+            string fatPath = Path.Combine(rootPath, "ftc", "fat.bin");
+
+            uint y9Offset = File.Exists(y9Path) ? 0 : romInfo.Cabecera.ARM9overlayOffset;
+            uint y9Size = File.Exists(y9Path) ? (uint)new FileInfo(y9Path).Length : romInfo.Cabecera.ARM9overlaySize;
+            string y9File = File.Exists(y9Path) ? y9Path : accion.ROMFile;
+
+            uint y7Offset = File.Exists(y7Path) ? 0 : romInfo.Cabecera.ARM7overlayOffset;
+            uint y7Size = File.Exists(y7Path) ? (uint)new FileInfo(y7Path).Length : romInfo.Cabecera.ARM7overlaySize;
+            string y7File = File.Exists(y7Path) ? y7Path : accion.ROMFile;
+
+            Nitro.Estructuras.sFAT[] y9Fat = File.Exists(y9Path) ? fatTable : romFat;
+            Nitro.Estructuras.sFAT[] y7Fat = File.Exists(y7Path) ? fatTable : romFat;
+
+            ftc.files.AddRange(Nitro.Overlay.ReadBasicOverlays(y9File, y9Offset, y9Size, true, y9Fat));
+            ftc.files.AddRange(Nitro.Overlay.ReadBasicOverlays(y7File, y7Offset, y7Size, false, y7Fat));
+
+            accion.LastFileID++;
+
+            sFile fnt = new sFile();
+            fnt.name = "fnt.bin";
+            fnt.offset = File.Exists(fntPath) ? 0 : romInfo.Cabecera.fileNameTableOffset;
+            fnt.size = File.Exists(fntPath) ? (uint)new FileInfo(fntPath).Length : romInfo.Cabecera.fileNameTableSize;
+            fnt.path = File.Exists(fntPath) ? fntPath : accion.ROMFile;
+            fnt.id = (ushort)accion.LastFileID;
+            accion.LastFileID++;
+            ftc.files.Add(fnt);
+
+            sFile fat = new sFile();
+            fat.name = "fat.bin";
+            fat.offset = File.Exists(fatPath) ? 0 : romInfo.Cabecera.FAToffset;
+            fat.size = File.Exists(fatPath) ? (uint)new FileInfo(fatPath).Length : romInfo.Cabecera.FATsize;
+            fat.path = File.Exists(fatPath) ? fatPath : accion.ROMFile;
+            fat.id = (ushort)accion.LastFileID;
+            accion.LastFileID++;
+            ftc.files.Add(fat);
+
+            sFile banner = new sFile();
+            banner.name = "banner.bin";
+            banner.offset = romInfo.Cabecera.bannerOffset;
+            banner.size = romInfo.Banner.GetDefSize(romInfo.Cabecera.banner_size);
+            banner.path = accion.ROMFile;
+            banner.id = (ushort)accion.LastFileID;
+            accion.LastFileID++;
+            ftc.files.Add(banner);
+
+            sFile arm9 = new sFile();
+            arm9.name = "arm9.bin";
+            arm9.offset = romInfo.Cabecera.ARM9romOffset;
+            arm9.size = romInfo.Cabecera.ARM9size;
+            arm9.path = accion.ROMFile;
+            arm9.id = (ushort)accion.LastFileID;
+            accion.LastFileID++;
+            ftc.files.Add(arm9);
+
+            sFile arm7 = new sFile();
+            arm7.name = "arm7.bin";
+            arm7.offset = romInfo.Cabecera.ARM7romOffset;
+            arm7.size = romInfo.Cabecera.ARM7size;
+            arm7.path = accion.ROMFile;
+            arm7.id = (ushort)accion.LastFileID;
+            accion.LastFileID++;
+            ftc.files.Add(arm7);
+
+            if (romInfo.Cabecera.ARM9overlaySize != 0)
+            {
+                sFile y9 = new sFile();
+                y9.name = "y9.bin";
+                y9.offset = y9Offset;
+                y9.size = y9Size;
+                y9.path = y9File;
+                y9.id = (ushort)accion.LastFileID;
+                accion.LastFileID++;
+                ftc.files.Add(y9);
+            }
+
+            if (romInfo.Cabecera.ARM7overlaySize != 0)
+            {
+                sFile y7 = new sFile();
+                y7.name = "y7.bin";
+                y7.offset = y7Offset;
+                y7.size = y7Size;
+                y7.path = y7File;
+                y7.id = (ushort)accion.LastFileID;
+                accion.LastFileID++;
+                ftc.files.Add(y7);
+            }
+
+            Console.WriteLine("Add_SystemFilesWithEx: Checking TWL files...");
+            Console.WriteLine("Add_SystemFilesWithEx: unitCode=" + romInfo.Cabecera.unitCode + ", (unitCode & 2)=" + (romInfo.Cabecera.unitCode & 2));
+            Console.WriteLine("Add_SystemFilesWithEx: this.twl=" + (this.twl != null ? "not null" : "null"));
+            Console.WriteLine("Add_SystemFilesWithEx: dsi9_size=" + romInfo.Cabecera.dsi9_size + ", dsi7_size=" + romInfo.Cabecera.dsi7_size);
+            
+            if ((romInfo.Cabecera.unitCode & 2) > 0 && this.twl != null)
+            {
+                string arm9iPath = Path.Combine(rootPath, "ftc", "arm9i.bin");
+                string arm7iPath = Path.Combine(rootPath, "ftc", "arm7i.bin");
+                Console.WriteLine("Add_SystemFilesWithEx: arm9iPath=" + arm9iPath + ", exists=" + File.Exists(arm9iPath));
+                Console.WriteLine("Add_SystemFilesWithEx: arm7iPath=" + arm7iPath + ", exists=" + File.Exists(arm7iPath));
+
+                if (romInfo.Cabecera.dsi9_size > 0 && (int)romInfo.Cabecera.dsi9_size != -1)
+                {
+                    sFile arm9i = new sFile();
+                    arm9i.name = "arm9i.bin";
+                    arm9i.offset = 0;
+                    if (File.Exists(arm9iPath))
+                    {
+                        arm9i.size = (uint)new FileInfo(arm9iPath).Length;
+                        arm9i.path = arm9iPath;
+                        Console.WriteLine("Add_SystemFilesWithEx: arm9i.bin added from external file, size=" + arm9i.size);
+                    }
+                    else
+                    {
+                        arm9i.size = romInfo.Cabecera.dsi9_size;
+                        arm9i.path = accion.Get_TempFolder() + Path.DirectorySeparatorChar + arm9i.name;
+                        File.WriteAllBytes(arm9i.path, this.twl.DSi9Data);
+                        Console.WriteLine("Add_SystemFilesWithEx: arm9i.bin added from TWL data, size=" + arm9i.size);
+                    }
+                    arm9i.id = (ushort)accion.LastFileID;
+                    accion.LastFileID++;
+                    ftc.files.Add(arm9i);
+                    Console.WriteLine("Add_SystemFilesWithEx: arm9i.bin added to ftc.files, id=" + arm9i.id);
+                }
+
+                if (romInfo.Cabecera.dsi7_size > 0 && (int)romInfo.Cabecera.dsi7_size != -1)
+                {
+                    sFile arm7i = new sFile();
+                    arm7i.name = "arm7i.bin";
+                    arm7i.offset = 0;
+                    if (File.Exists(arm7iPath))
+                    {
+                        arm7i.size = (uint)new FileInfo(arm7iPath).Length;
+                        arm7i.path = arm7iPath;
+                    }
+                    else
+                    {
+                        arm7i.size = romInfo.Cabecera.dsi7_size;
+                        arm7i.path = accion.Get_TempFolder() + Path.DirectorySeparatorChar + arm7i.name;
+                        File.WriteAllBytes(arm7i.path, this.twl.DSi7Data);
+                    }
+                    arm7i.id = (ushort)accion.LastFileID;
+                    accion.LastFileID++;
+                    ftc.files.Add(arm7i);
+                }
+            }
+
             return ftc;
         }
 
@@ -1875,13 +2156,25 @@ namespace Tinke
             Console.WriteLine(Tools.Helper.GetTranslation("Messages", "S09"), new FileInfo(fileFNT).Length);
 
             // Escribimos el banner
-            string banner = Path.GetTempFileName();
-            header.banner_size = Nitro.NDS.EscribirBanner(banner, romInfo.Banner);
+            string banner;
+            sFile bannerFile = ftc.files.Find(f => f.name == "banner.bin");
+            if (bannerFile.name != null && bannerFile.path != accion.ROMFile)
+            {
+                Nitro.Estructuras.Banner externalBanner = Nitro.NDS.LeerBanner(bannerFile.path, 0, bannerFile.size);
+                banner = Path.GetTempFileName();
+                header.banner_size = Nitro.NDS.EscribirBanner(banner, externalBanner);
+            }
+            else
+            {
+                banner = Path.GetTempFileName();
+                header.banner_size = Nitro.NDS.EscribirBanner(banner, romInfo.Banner);
+            }
 
             // Escribimos el FAT (File Allocation Table)
             string fileFAT = Path.GetTempFileName();
             header.FAToffset = currPos;
             Nitro.FAT.Write(fileFAT, accion.Root, header.FAToffset, accion.SortedIDs, arm9overlayOffset, arm7overlayOffset, header);
+            header.FATsize = (uint)(accion.SortedIDs.Length * 8);
             currPos += (uint)new FileInfo(fileFAT).Length;
 
             header.bannerOffset = currPos;
