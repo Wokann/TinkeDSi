@@ -2053,7 +2053,7 @@ namespace Tinke
                 // Write Download Play signature at ROMsize position (NTR region end)
                 // Signature must be at header.ROMsize, between NTR region and TWL region
                 // twl will padding space between NTR region and TWL region, so we must write signature after twl padding to overwrite it
-                if (header.hasDlpSignature)
+                if (romInfo.DlpSignature.hasDlpSignature)
                 {
                     uint signatureOffset = header.ROMsize;
                     long savedPos = bw.BaseStream.Position;
@@ -2068,7 +2068,9 @@ namespace Tinke
 
                     // Write signature at ROMsize position
                     bw.BaseStream.Position = signatureOffset;
-                    bw.Write(header.dlpSignature, 0, 0x88);
+                    bw.Write(romInfo.DlpSignature.ID);
+                    bw.Write(romInfo.DlpSignature.RSA, 0, 0x80);
+                    bw.Write(romInfo.DlpSignature.Seed);
                     Console.WriteLine("Download Play signature written at offset 0x" + signatureOffset.ToString("X8"));
 
                     // Restore position to whichever is greater (continue subsequent writes)

@@ -151,9 +151,6 @@ namespace Tinke.Nitro
             public bool trimmedRom;
             public bool doublePadding;
 
-            public bool hasDlpSignature;        // Whether the ROM has Download Play signature
-            public byte[] dlpSignature;         // Download Play signature data (0x88 bytes: 4 ID + 0x80 RSA + 4 Seed)
-
             /* Parental Control Age Ratings (for different countries/areas)
              *     Bit7: Rating exists for local country/area
              *     Bit6: Game is prohibited in local country/area?
@@ -284,6 +281,15 @@ namespace Tinke.Nitro
             public UInt32 fileID;
             public UInt32 reserved;
             public bool ARM9;           // Si es true es ARM9, sino es ARM7
+        }
+        
+        public struct DownLoadPlaySignature
+        {
+            public UInt32 ID;                    // Download Play ID (4 bytes)
+            public byte[] RSA;                   // RSA signature (0x80 bytes)
+            public UInt32 Seed;                  // Seed (4 bytes)
+            
+            public bool hasDlpSignature;        // Whether the ROM has Download Play signature
         }
     }
 }
